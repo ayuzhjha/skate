@@ -5,17 +5,6 @@
   # 🛹 SKATE
   ### *Luxury Emerald Casino & Provably Fair Arcade*
 
-  [![Platform](https://img.shields.io/badge/Platform-Android%20%7C%20Web-00e676?style=for-the-badge&logo=android&logoColor=white)](#)
-  [![React](https://img.shields.io/badge/React-19.2-38bdf8?style=for-the-badge&logo=react&logoColor=white)](#)
-  [![Vite](https://img.shields.io/badge/Vite-8.3-a855f7?style=for-the-badge&logo=vite&logoColor=white)](#)
-  [![Capacitor](https://img.shields.io/badge/Capacitor-8.5-11b2ff?style=for-the-badge&logo=capacitor&logoColor=white)](#)
-  [![Python](https://img.shields.io/badge/Backend-Python%20%2F%20SQLite3-facc15?style=for-the-badge&logo=python&logoColor=black)](#)
-  [![Fairness](https://img.shields.io/badge/Security-HMAC--SHA256%20Fair-emerald?style=for-the-badge)](#)
-
-  <p align="center">
-    A high-octane, mobile-first casino application pairing authentic Vegas table math with street-skate arcade action. Built with <b>React 19</b>, <b>Capacitor Android</b>, <b>hardware haptics</b>, and an authoritative <b>provably fair HMAC-SHA256</b> verification engine.
-  </p>
-
   [⬇️ Download Android APK (SKATE.apk)](#-download--installation) • [✨ Features](#-key-features) • [🎮 Games Catalog](#-game-modes) • [🛡️ Provably Fair](#-provably-fair-engine) • [🚀 Quickstart](#-getting-started)
 
 </div>
