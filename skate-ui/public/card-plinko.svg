@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <radialGradient id="plinkoBg" cx="65%" cy="40%" r="70%">
+      <stop offset="0%" stop-color="#14223d" />
+      <stop offset="50%" stop-color="#0b1324" />
+      <stop offset="100%" stop-color="#050811" />
+    </radialGradient>
+    <!-- Sphere Glow & Gradient -->
+    <radialGradient id="sphereGrad" cx="35%" cy="30%" r="65%">
+      <stop offset="0%" stop-color="#bae6fd" />
+      <stop offset="25%" stop-color="#38bdf8" />
+      <stop offset="65%" stop-color="#0284c7" />
+      <stop offset="90%" stop-color="#0369a1" />
+      <stop offset="100%" stop-color="#0c4a6e" />
+    </radialGradient>
+    <filter id="sphereGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="0" stdDeviation="10" flood-color="#38bdf8" flood-opacity="0.65" />
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.8" />
+    </filter>
+    <!-- Peg Gradient -->
+    <radialGradient id="pegGrad" cx="35%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#f8fafc" />
+      <stop offset="45%" stop-color="#94a3b8" />
+      <stop offset="90%" stop-color="#475569" />
+      <stop offset="100%" stop-color="#1e293b" />
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="320" height="180" fill="url(#plinkoBg)" />
+
+  <!-- Ambient blue neon lighting -->
+  <circle cx="210" cy="70" r="90" fill="#0284c7" opacity="0.18" filter="blur(35px)" />
+  <circle cx="100" cy="110" r="70" fill="#38bdf8" opacity="0.1" filter="blur(30px)" />
+
+  <!-- Rows of Chrome Pegs with light pins -->
+  <g>
+    <!-- Row 1 -->
+    <circle cx="100" cy="30" r="4" fill="url(#pegGrad)" />
+    <circle cx="150" cy="30" r="4" fill="url(#pegGrad)" />
+    <circle cx="200" cy="30" r="4" fill="url(#pegGrad)" />
+    <circle cx="250" cy="30" r="4" fill="url(#pegGrad)" />
+
+    <!-- Row 2 -->
+    <circle cx="75" cy="55" r="4" fill="url(#pegGrad)" />
+    <circle cx="125" cy="55" r="4" fill="url(#pegGrad)" />
+    <circle cx="175" cy="55" r="4" fill="url(#pegGrad)" />
+    <circle cx="225" cy="55" r="4" fill="url(#pegGrad)" />
+    <circle cx="275" cy="55" r="4" fill="url(#pegGrad)" />
+
+    <!-- Row 3 -->
+    <circle cx="100" cy="80" r="4" fill="url(#pegGrad)" />
+    <circle cx="150" cy="80" r="4" fill="url(#pegGrad)" />
+    <!-- Ball hits near (205, 80) -->
+    <circle cx="250" cy="80" r="4" fill="url(#pegGrad)" />
+
+    <!-- Row 4 -->
+    <circle cx="75" cy="105" r="4" fill="url(#pegGrad)" />
+    <circle cx="125" cy="105" r="4" fill="url(#pegGrad)" />
+    <circle cx="175" cy="105" r="4" fill="url(#pegGrad)" />
+    <circle cx="225" cy="105" r="4" fill="url(#pegGrad)" />
+    <circle cx="275" cy="105" r="4" fill="url(#pegGrad)" />
+  </g>
+
+  <!-- Glowing Blue Sphere -->
+  <g transform="translate(202, 70)" filter="url(#sphereGlow)">
+    <circle cx="0" cy="0" r="24" fill="url(#sphereGrad)" />
+    <!-- Bright Specular Highlight -->
+    <ellipse cx="-7" cy="-8" rx="6" ry="4" fill="#ffffff" opacity="0.8" transform="rotate(-25 -7 -8)" />
+    <!-- Secondary Rim Glow -->
+    <circle cx="0" cy="0" r="23" fill="none" stroke="#e0f2fe" stroke-width="1" opacity="0.4" />
+  </g>
+
+  <!-- Bottom Dark Gradient for clean text display -->
+  <linearGradient id="bottomFadeP" x1="0%" y1="0%" x2="0%" y2="100%">
+    <stop offset="0%" stop-color="#000000" stop-opacity="0" />
+    <stop offset="60%" stop-color="#000000" stop-opacity="0.4" />
+    <stop offset="100%" stop-color="#050811" stop-opacity="0.9" />
+  </linearGradient>
+  <rect y="70" width="320" height="110" fill="url(#bottomFadeP)" />
+</svg>

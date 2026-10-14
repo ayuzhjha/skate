@@ -1,0 +1,20 @@
+/* ------------------------------------------------------------------
+   VANTA — typefaces
+   Self-hosted variable fonts so rendering is deterministic.
+   ------------------------------------------------------------------ */
+
+@font-face {
+  font-family: 'Fraunces';
+  src: url('/fonts/fraunces.woff2') format('woff2');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'InterVA';
+  src: url('/fonts/inter.woff2') format('woff2');
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: block;
+}
