@@ -1,10 +1,11 @@
 import { useState, useRef, useEffect } from 'react';
 import { useStore } from '../hooks';
+import { api, newIdempotency } from '../api';
 import {
   PLINKO_MULTIPLIERS,
-  recordTransaction,
-  recordGameOutcome,
-  nextProvablyFairFloat,
+  applyServerBalance,
+  recordLocalGameResult,
+  handleGameError,
   playSound,
   triggerWinVibration,
   showToast
@@ -121,7 +122,7 @@ export default function PlinkoGame({ stake }) {
     }
   }, [risk]);
 
-  const dropBall = () => {
+  const dropBall = async () => {
     if (isDropping) return;
     if (state.credits < stake) {
       showToast('Insufficient virtual credits!', 'danger');
@@ -130,27 +131,45 @@ export default function PlinkoGame({ stake }) {
 
     setIsDropping(true);
     setHighlightBucket(null);
-
-    recordTransaction('bet', `Plinko Drop (${risk.toUpperCase()})`, -stake, `Stake: ${stake} SC`);
     playSound('chip');
+
+    // Server settles the drop first: the bucket, multiplier and payout
+    // below all come from this response. Nothing is settled locally.
+    let res;
+    try {
+      res = await api.plinko(stake, risk, newIdempotency());
+    } catch (err) {
+      setIsDropping(false);
+      await handleGameError(err);
+      return;
+    }
 
     const w = 380;
     const pinSpacing = 32;
     const startY = 32;
     const rowSpacing = 26;
 
-    // Compute seeded path pegs
-    let bucketIdx = 0;
+    // Animate the ball to the SERVER's bucket. The peg path is visual
+    // only: any left/right sequence summing to the bucket works, so the
+    // moves are shuffled for a natural-looking drop.
+    const bucketIdx = res.bucket;
+    const moves = [...Array(bucketIdx).fill(1), ...Array(8 - bucketIdx).fill(0)];
+    for (let i = moves.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [moves[i], moves[j]] = [moves[j], moves[i]];
+    }
+
+    let runningIdx = 0;
     const keyPegs = [{ x: w / 2, y: 12 }];
 
     for (let r = 0; r < 8; r++) {
       const pinCount = r + 3;
       const rowWidth = (pinCount - 1) * pinSpacing;
       const startX = (w - rowWidth) / 2;
-      const goRight = nextProvablyFairFloat() >= 0.5 ? 1 : 0;
-      bucketIdx += goRight;
+      const goRight = moves[r];
+      runningIdx += goRight;
 
-      const pinX = startX + (bucketIdx + 1) * pinSpacing - (pinSpacing / 2);
+      const pinX = startX + (runningIdx + 1) * pinSpacing - (pinSpacing / 2);
       const pinY = startY + r * rowSpacing;
       keyPegs.push({ x: pinX, y: pinY });
     }
@@ -191,14 +210,15 @@ export default function PlinkoGame({ stake }) {
         drawBoard({ x: curX, y: curY, rot }, p1);
         animRef.current = requestAnimationFrame(anim);
       } else {
-        // Drop complete
+        // Drop complete — settle from the server response.
         setIsDropping(false);
         setHighlightBucket(bucketIdx);
         drawBoard(null);
 
-        const mult = multipliers[bucketIdx];
-        const payout = Math.round(stake * mult);
-        recordGameOutcome('Skate Plinko', stake, payout, `Hit ${mult}× (${risk} risk)`);
+        const mult = res.multiplier;
+        const payout = res.payout;
+        applyServerBalance(res.balance, res.xp);
+        recordLocalGameResult('Skate Plinko', stake, payout, false);
 
         setLastResult({ bucketIdx, mult, payout });
         if (mult >= 2.0) {

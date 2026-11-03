@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Copy, Check } from 'lucide-react';
 import { useStore } from '../hooks';
-import { MIN_STAKE, playSound, simpleSha256Hex, showToast } from '../store';
+import { api } from '../api';
+import { MIN_STAKE, MAX_STAKE, playSound, showToast } from '../store';
 
 import BlackjackGame from '../games/Blackjack';
 import PlinkoGame from '../games/Plinko';
@@ -17,6 +18,7 @@ const GAME_TABS = [
   { id: 'mines', label: 'Mines', diamond: true },
   { id: 'dice', label: 'Dice', diceColor: '#c084fc' },
   { id: 'crash', label: 'Crash', rocket: true },
+  { id: 'reflex', label: 'Reflex', icon: '🎯' },
 ];
 
 const CHIP_VALUES = [10, 25, 100, 250, 500];
@@ -30,6 +32,12 @@ export default function PlayPage() {
   const [stake, setStake] = useState(100);
   const [copied, setCopied] = useState(false);
 
+  // Table limits (10–5,000 SC). Every stake change goes through this clamp,
+  // and games always receive the clamped value, so no round can start
+  // outside the table limits.
+  const clampStake = (v) => Math.min(MAX_STAKE, Math.max(MIN_STAKE, Math.round(v) || MIN_STAKE));
+  const effectiveStake = stake > 0 ? clampStake(stake) : MIN_STAKE;
+
   const switchGame = (id) => {
     playSound('chip');
     navigate(`/play/${id}`);
@@ -37,18 +45,18 @@ export default function PlayPage() {
 
   const adjustStake = (delta) => {
     playSound('chip');
-    setStake(prev => Math.max(1, prev + delta));
+    setStake(prev => clampStake(prev + delta));
   };
 
   const multiplyStake = (factor) => {
     playSound('chip');
-    setStake(prev => Math.max(1, Math.round(prev * factor)));
+    setStake(prev => clampStake(prev * factor));
   };
 
   const setMaxStake = () => {
     playSound('chip');
-    // Set to all credits, or whatever balance user has
-    setStake(Math.max(1, state.credits));
+    // Set to the balance, capped at the table limit
+    setStake(clampStake(state.credits));
   };
 
   const handleCustomStakeChange = (e) => {
@@ -56,17 +64,30 @@ export default function PlayPage() {
     if (isNaN(val)) {
       setStake(0);
     } else {
-      setStake(Math.max(0, val));
+      setStake(val <= 0 ? 0 : clampStake(val));
     }
   };
 
   // Dynamic slider range that scales with user balance and custom entered stake
   const dynamicMax = Math.max(1000, state.credits, stake);
 
-  const currentSeedHash = simpleSha256Hex(`${state.fairness.serverSeed}:${state.fairness.clientSeed}:${state.fairness.nonce}`).slice(0, 10);
+  // Server fairness values (seed hash + nonce from GET /fairness). The
+  // local toy hash is gone; if the fetch fails, the pill simply hides
+  // rather than showing a made-up value.
+  const [fairness, setFairness] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    api.fairness()
+      .then((f) => { if (!cancelled) setFairness(f); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  const currentSeedHash = fairness ? fairness.server_seed_hash.slice(0, 10) : null;
 
   const copyHash = () => {
-    navigator.clipboard?.writeText(currentSeedHash);
+    if (!currentSeedHash) return;
+    navigator.clipboard?.writeText(fairness.server_seed_hash);
     setCopied(true);
     showToast('Provably Fair Hash copied!', 'emerald');
     setTimeout(() => setCopied(false), 2000);
@@ -102,11 +123,15 @@ export default function PlayPage() {
         <div className="wager-stake-header">
           <span className="wager-stake-title">WAGER STAKE</span>
           <div className="wager-fairness-wrap">
-            <span className="wager-nonce-label">Nonce #{state.fairness.nonce}</span>
-            <div className="wager-hash-pill" onClick={copyHash} title="Click to copy hash">
-              <span>{currentSeedHash}...</span>
-              {copied ? <Check size={12} color="#00e676" /> : <Copy size={12} color="#00e676" />}
-            </div>
+            {fairness && (
+              <>
+                <span className="wager-nonce-label">Nonce #{fairness.nonce}</span>
+                <div className="wager-hash-pill" onClick={copyHash} title="Click to copy hash">
+                  <span>{currentSeedHash}...</span>
+                  {copied ? <Check size={12} color="#00e676" /> : <Copy size={12} color="#00e676" />}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -114,17 +139,17 @@ export default function PlayPage() {
         <div className="wager-slider-row">
           <input
             type="range"
-            min={1}
-            max={dynamicMax}
+            min={MIN_STAKE}
+            max={Math.max(MIN_STAKE, Math.min(dynamicMax, MAX_STAKE))}
             step="10"
             value={Math.min(stake, dynamicMax)}
-            onChange={(e) => setStake(Math.max(1, Number(e.target.value)))}
+            onChange={(e) => setStake(clampStake(Number(e.target.value)))}
             className="wager-range-slider"
           />
           <div className="wager-amount-box" title="Tap to enter custom stake amount">
             <input
               type="number"
-              min="1"
+              min={MIN_STAKE}
               value={stake === 0 ? '' : stake}
               onChange={handleCustomStakeChange}
               placeholder="0"
@@ -160,7 +185,7 @@ export default function PlayPage() {
           <button
             onClick={setMaxStake}
             className="chip-preset-btn chip-btn-max"
-            title="Wager all available balance"
+            title="Wager up to the 5,000 SC table limit"
           >
             MAX
           </button>
@@ -168,12 +193,12 @@ export default function PlayPage() {
       </div>
 
       {/* Active Game Component Mount */}
-      {activeGame === 'blackjack' && <BlackjackGame stake={stake} />}
-      {activeGame === 'plinko' && <PlinkoGame stake={stake} />}
-      {activeGame === 'mines' && <MinesGame stake={stake} />}
-      {activeGame === 'dice' && <DiceGame stake={stake} />}
-      {activeGame === 'crash' && <CrashGame stake={stake} />}
-      {activeGame === 'reflex' && <ReflexGame stake={stake} />}
+      {activeGame === 'blackjack' && <BlackjackGame stake={effectiveStake} />}
+      {activeGame === 'plinko' && <PlinkoGame stake={effectiveStake} />}
+      {activeGame === 'mines' && <MinesGame stake={effectiveStake} />}
+      {activeGame === 'dice' && <DiceGame stake={effectiveStake} />}
+      {activeGame === 'crash' && <CrashGame stake={effectiveStake} />}
+      {activeGame === 'reflex' && <ReflexGame stake={effectiveStake} />}
     </div>
   );
 }

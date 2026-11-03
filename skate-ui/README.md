@@ -1,6 +1,6 @@
 <div align="center">
 
-  <img src="ref-imgs/icon.png" width="130" height="130" alt="SKATE Casino Logo" style="border-radius: 28px; box-shadow: 0 10px 30px rgba(0, 230, 118, 0.35);" />
+  <img src="../ref-imgs/icon.png" width="130" height="130" alt="SKATE Casino Logo" style="border-radius: 28px; box-shadow: 0 10px 30px rgba(0, 230, 118, 0.35);" />
 
   # 🛹 SKATE
   ### *Luxury Emerald Casino & Provably Fair Arcade*
@@ -10,10 +10,10 @@
   [![Vite](https://img.shields.io/badge/Vite-8.3-a855f7?style=for-the-badge&logo=vite&logoColor=white)](#)
   [![Capacitor](https://img.shields.io/badge/Capacitor-8.5-11b2ff?style=for-the-badge&logo=capacitor&logoColor=white)](#)
   [![Python](https://img.shields.io/badge/Backend-Python%20%2F%20SQLite3-facc15?style=for-the-badge&logo=python&logoColor=black)](#)
-  [![Fairness](https://img.shields.io/badge/Security-HMAC--SHA256%20Fair-emerald?style=for-the-badge)](#)
+  [![Fairness](https://img.shields.io/badge/Fairness-Deterministic%20Hash-emerald?style=for-the-badge)](#)
 
   <p align="center">
-    A high-octane, mobile-first casino application pairing authentic Vegas table math with street-skate arcade action. Built with <b>React 19</b>, <b>Capacitor Android</b>, <b>hardware haptics</b>, and an authoritative <b>provably fair HMAC-SHA256</b> verification engine.
+    A high-octane, mobile-first casino application pairing authentic Vegas table math with street-skate arcade action. Built with <b>React 19</b>, <b>Capacitor Android</b>, and <b>hardware haptics</b>. Fairness claims are stated honestly in the root README — the in-browser hash is deterministic, not audited SHA-256.
   </p>
 
 </div>
@@ -27,19 +27,19 @@
     <tr>
       <td width="25%" align="center">
         <b>Home Lobby</b><br/>
-        <img src="ref-imgs/ss1.png" alt="SKATE Home Lobby" width="100%" style="border-radius: 14px;" />
+        <img src="../ref-imgs/ss1.png" alt="SKATE Home Lobby" width="100%" style="border-radius: 14px;" />
       </td>
       <td width="25%" align="center">
         <b>Royale Blackjack</b><br/>
-        <img src="ref-imgs/ss3.png" alt="Blackjack Table" width="100%" style="border-radius: 14px;" />
+        <img src="../ref-imgs/ss3.png" alt="Blackjack Table" width="100%" style="border-radius: 14px;" />
       </td>
       <td width="25%" align="center">
         <b>Daily Rewards & Streak</b><br/>
-        <img src="ref-imgs/ss2.png" alt="Rewards & Streak" width="100%" style="border-radius: 14px;" />
+        <img src="../ref-imgs/ss2.png" alt="Rewards & Streak" width="100%" style="border-radius: 14px;" />
       </td>
       <td width="25%" align="center">
         <b>VIP Career Profile</b><br/>
-        <img src="ref-imgs/ss4.png" alt="VIP Profile" width="100%" style="border-radius: 14px;" />
+        <img src="../ref-imgs/ss4.png" alt="VIP Profile" width="100%" style="border-radius: 14px;" />
       </td>
     </tr>
   </table>
@@ -56,12 +56,12 @@ Whenever a game round resolves, custom full-screen celebration modals pop up wit
     <tr>
       <td width="50%" align="center">
         <h3 style="color: #00e676;">🎉 YOU WIN!</h3>
-        <img src="ref-imgs/win_art.png" alt="You Win Modal Artwork" width="340" style="border-radius: 18px; border: 1px solid rgba(0, 230, 118, 0.4); box-shadow: 0 0 35px rgba(0, 230, 118, 0.3);" /><br/>
+        <img src="../ref-imgs/win_art.png" alt="You Win Modal Artwork" width="340" style="border-radius: 18px; border: 1px solid rgba(0, 230, 118, 0.4); box-shadow: 0 0 35px rgba(0, 230, 118, 0.3);" /><br/>
         <sub>Royal Crown, gold chips, spade jewel, dynamic payout chip badge & neon emerald CTA.</sub>
       </td>
       <td width="50%" align="center">
         <h3 style="color: #ef4444;">💥 YOU LOSE</h3>
-        <img src="ref-imgs/lose_art.png" alt="You Lose Modal Artwork" width="340" style="border-radius: 18px; border: 1px solid rgba(239, 68, 68, 0.4); box-shadow: 0 0 35px rgba(239, 68, 68, 0.3);" /><br/>
+        <img src="../ref-imgs/lose_art.png" alt="You Lose Modal Artwork" width="340" style="border-radius: 18px; border: 1px solid rgba(239, 68, 68, 0.4); box-shadow: 0 0 35px rgba(239, 68, 68, 0.3);" /><br/>
         <sub>Cracked ace of spades, crimson embers, shattered chips, streak motivation & neon red CTA.</sub>
       </td>
     </tr>
@@ -86,12 +86,12 @@ Whenever a game round resolves, custom full-screen celebration modals pop up wit
   - High-priority Android notification channel (`skate_casino_channel`) with vibration and custom app icon.
   - Attractive lock-screen alerts bringing users back to claim daily vaults, hot blackjack streaks, or multiplier alerts.
   - Background listener scheduling alerts when the user minimizes the app.
-- **💰 Uncapped Staking & Slider Controls**:
+- **💰 Stake Controls (10–5,000 SC)**:
   - Direct custom numeric typing in betting amount box.
-  - Dynamic stake slider scaling automatically to user balance.
-- **🔑 Admin Virtual Credits Injection**:
-  - Built-in credit grant tool in Settings protected by authorization key: `fcukyou`.
-  - Transaction ledger history and balance synchronization.
+  - Dynamic stake slider scaling automatically to user balance, capped at the table limit.
+- **🔐 Server-backed wallet**:
+  - Credits, game outcomes, and the ledger live on the FastAPI backend — login required, every round settles through an idempotent API call.
+  - Transaction ledger history and balance synchronization from the server.
 
 ---
 
@@ -137,7 +137,7 @@ cd android
 
 | Feature | Key / Command | Description |
 | :--- | :---: | :--- |
-| **Custom Credits Key** | `fcukyou` | Enter in **Settings > Grant Custom Credits** to inject any virtual SC amount. |
+| **API Base URL** | `VITE_API_URL` (frontend env) | Where the web app reaches the API; default `http://localhost:8000`. |
 | **Notification Channel** | `skate_casino_channel` | Android notification channel with high priority and vibration. |
 | **Provably Fair Seed** | User configurable | Accessible via **Settings > Preferences & Fairness**. |
 

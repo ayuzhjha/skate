@@ -1,14 +1,18 @@
 import { useState, useEffect } from 'react';
-import { Routes, Route, NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { Home as HomeIcon, Gamepad2, Gift, User, Settings as SettingsIcon, Volume2, VolumeX } from 'lucide-react';
+import { Routes, Route, NavLink, useNavigate, useLocation, Navigate } from 'react-router-dom';
+import { Home as HomeIcon, Gamepad2, Gift, User, Settings as SettingsIcon, Volume2, VolumeX, Crown } from 'lucide-react';
 import { useStore } from './hooks';
 import { onToast, isDailyClaimAvailable, getState, saveState } from './store';
+import { useAuth } from './auth';
+import { onServerStatus } from './api';
 import HomePage from './pages/Home';
 import PlayPage from './pages/Play';
 import RewardsPage from './pages/Rewards';
 import ProfilePage from './pages/Profile';
 import SettingsPage from './pages/Settings';
 import HistoryPage from './pages/History';
+import LoginPage from './pages/Login';
+import SubscribePage from './pages/Subscribe';
 import WinLoseModal from './components/WinLoseModal';
 import { initBackgroundNotifications } from './notificationService';
 
@@ -40,6 +44,10 @@ export default function App() {
   const state = useStore();
   const navigate = useNavigate();
   const location = useLocation();
+  const { user, loading: authLoading } = useAuth();
+  const [serverDown, setServerDown] = useState(false);
+
+  useEffect(() => onServerStatus((ok) => setServerDown(!ok)), []);
 
   const claimableCount = state.missions.filter(m => m.progress >= m.target && !m.claimed).length + (isDailyClaimAvailable() ? 1 : 0);
 
@@ -60,10 +68,53 @@ export default function App() {
     initBackgroundNotifications();
   }, []);
 
+  if (authLoading) {
+    return (
+      <div className="app-shell">
+        <ToastContainer />
+        <main className="main-content">
+          <div style={{ textAlign: 'center', paddingTop: 80, color: 'var(--text-secondary)' }}>
+            Loading SKATE…
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // Route guard: without a valid token, only the login screen exists —
+  // no header balance, no game nav, no game routes.
+  if (!user) {
+    return (
+      <div className="app-shell">
+        <ToastContainer />
+        <WinLoseModal />
+        {serverDown && (
+          <div style={{ background: 'rgba(231, 76, 60, 0.18)', borderBottom: '1px solid var(--red)', color: '#ffffff', fontSize: 12, fontWeight: 700, textAlign: 'center', padding: '8px 12px' }}>
+            Server unreachable — start the backend (see server docs)
+          </div>
+        )}
+        <main className="main-content">
+          <div key={location.pathname} className="page-transition">
+            <Routes location={location}>
+              <Route path="/login" element={<LoginPage />} />
+              <Route path="*" element={<LoginPage />} />
+            </Routes>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <ToastContainer />
       <WinLoseModal />
+
+      {serverDown && (
+        <div style={{ background: 'rgba(231, 76, 60, 0.18)', borderBottom: '1px solid var(--red)', color: '#ffffff', fontSize: 12, fontWeight: 700, textAlign: 'center', padding: '8px 12px' }}>
+          Server unreachable — start the backend (see server docs). Games will not settle until it is back.
+        </div>
+      )}
 
       {/* Header */}
       <header className="header">
@@ -97,6 +148,9 @@ export default function App() {
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/subscribe" element={<SubscribePage />} />
+            <Route path="/login" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>
       </main>
@@ -130,6 +184,13 @@ export default function App() {
             <User size={22} />
           </div>
           <span>Profile</span>
+          <div className="nav-active-glow" />
+        </NavLink>
+        <NavLink to="/subscribe" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+          <div className="nav-icon-wrap">
+            <Crown size={22} />
+          </div>
+          <span>Subscribe</span>
           <div className="nav-active-glow" />
         </NavLink>
         <NavLink to="/settings" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>

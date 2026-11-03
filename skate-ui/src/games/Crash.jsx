@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { useStore } from '../hooks';
+import { api, newIdempotency } from '../api';
 import {
-  recordTransaction,
-  recordGameOutcome,
-  nextProvablyFairFloat,
+  applyServerBalance,
+  recordLocalGameResult,
+  handleGameError,
   playSound,
   triggerHaptic,
   triggerWinVibration,
@@ -15,6 +16,7 @@ export default function CrashGame({ stake }) {
   const [running, setRunning] = useState(false);
   const [crashed, setCrashed] = useState(false);
   const [cashedOut, setCashedOut] = useState(false);
+  const [settling, setSettling] = useState(false);
   const [currentMult, setCurrentMult] = useState(1.0);
   const [crashPoint, setCrashPoint] = useState(2.0);
   const [subText, setSubText] = useState('Tap Launch Flight to take off');
@@ -25,7 +27,7 @@ export default function CrashGame({ stake }) {
   const particlesRef = useRef([]);
   const explosionRef = useRef([]);
   const rafRef = useRef(null);
-  const stateRef = useRef({ running: false, cashedOut: false, stake, currentMult: 1.0, crashPoint: 2.0 });
+  const stateRef = useRef({ running: false, cashedOut: false, stake, currentMult: 1.0 });
 
   useEffect(() => {
     const img = new Image();
@@ -153,6 +155,24 @@ export default function CrashGame({ stake }) {
     };
   }, []);
 
+  const spawnExplosion = (atMult) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const w = canvas.width, h = canvas.height;
+    const progress = Math.min(1, (atMult - 1) / 5.5);
+    const endX = 24 + progress * (w - 70);
+    const endY = h - 25 - Math.pow(progress, 1.25) * (h - 65);
+    explosionRef.current = Array.from({ length: 30 }, () => ({
+      x: endX,
+      y: endY,
+      vx: (Math.random() - 0.5) * 7,
+      vy: (Math.random() - 0.5) * 7,
+      radius: Math.random() * 4 + 2,
+      color: ['#e74c3c', '#f39c12', '#ffffff'][Math.floor(Math.random() * 3)],
+      life: 30
+    }));
+  };
+
   const startFlight = () => {
     if (running) return;
     if (state.credits < stake) {
@@ -160,14 +180,10 @@ export default function CrashGame({ stake }) {
       return;
     }
 
-    const r = nextProvablyFairFloat();
-    const cp = Math.max(1.04, +(0.98 / (1.0 - r * 0.94)).toFixed(2));
-
     setRunning(true);
     setCrashed(false);
     setCashedOut(false);
     setCurrentMult(1.0);
-    setCrashPoint(cp);
     setSubText('Tap Bail Out & Cash before wipeout!');
     setLastWinAmt(0);
     particlesRef.current = [];
@@ -178,10 +194,12 @@ export default function CrashGame({ stake }) {
       cashedOut: false,
       stake,
       currentMult: 1.0,
-      crashPoint: cp,
     };
 
-    recordTransaction('bet', 'Ollie Crash Launch', -stake, `Stake: ${stake} SC`);
+    // No server call at launch and no predetermined crash point: the
+    // flight is visual only. The round settles exactly once, when the
+    // player bails (or at the 25× display cap), and the server reveals
+    // the crash point then.
     playSound('chip');
 
     const startTime = performance.now();
@@ -193,40 +211,9 @@ export default function CrashGame({ stake }) {
       stateRef.current.currentMult = mult;
       setCurrentMult(mult);
 
-      if (mult >= stateRef.current.crashPoint) {
-        // WIPEOUT!
-        stateRef.current.running = false;
-        setRunning(false);
-        setCrashed(true);
-        setCurrentMult(stateRef.current.crashPoint);
-        setSubText(`WIPED OUT @ ${stateRef.current.crashPoint.toFixed(2)}×!`);
-
-        // Generate explosion particles
-        const canvas = canvasRef.current;
-        if (canvas) {
-          const w = canvas.width, h = canvas.height;
-          const progress = Math.min(1, (stateRef.current.crashPoint - 1) / 5.5);
-          const endX = 24 + progress * (w - 70);
-          const endY = h - 25 - Math.pow(progress, 1.25) * (h - 65);
-          explosionRef.current = Array.from({ length: 30 }, () => ({
-            x: endX,
-            y: endY,
-            vx: (Math.random() - 0.5) * 7,
-            vy: (Math.random() - 0.5) * 7,
-            radius: Math.random() * 4 + 2,
-            color: ['#e74c3c', '#f39c12', '#ffffff'][Math.floor(Math.random() * 3)],
-            life: 30
-          }));
-        }
-
-        drawCanvas(stateRef.current.crashPoint, true);
-
-        if (!stateRef.current.cashedOut) {
-          playSound('loss');
-          triggerHaptic([40, 60]);
-          recordGameOutcome('Ollie Crash', stateRef.current.stake, 0, `Wiped out @ ${stateRef.current.crashPoint.toFixed(2)}×`);
-        }
-        return;
+      if (mult >= 25) {
+        // Display cap — auto-settle at 25× (no-op if a bail is pending).
+        void cashOutAt(25);
       }
 
       drawCanvas(mult, false);
@@ -236,21 +223,54 @@ export default function CrashGame({ stake }) {
     rafRef.current = requestAnimationFrame(tick);
   };
 
-  const cashOut = () => {
-    if (!stateRef.current.running || stateRef.current.cashedOut) return;
+  // Settle the flight through the server. The flight keeps animating
+  // while the request is in flight; on error it simply keeps going and
+  // the player can bail again. On success the server's crash_point
+  // decides the outcome: won iff bailed_at <= crash_point.
+  const cashOutAt = async (bailMult) => {
+    if (!stateRef.current.running || stateRef.current.cashedOut || settling) return;
+    const bail = Math.max(1.01, bailMult);
+    setSettling(true);
+    let res;
+    try {
+      res = await api.crash(stateRef.current.stake, bail, newIdempotency());
+    } catch (err) {
+      setSettling(false);
+      await handleGameError(err);
+      return;
+    }
+    setSettling(false);
 
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    stateRef.current.running = false;
     stateRef.current.cashedOut = true;
-    setCashedOut(true);
+    setRunning(false);
+    setCrashPoint(res.crash_point);
+    applyServerBalance(res.balance, res.xp);
+    recordLocalGameResult('Ollie Crash', stateRef.current.stake, res.payout, res.won);
 
-    const lockedMult = stateRef.current.currentMult;
-    const payout = Math.round(stateRef.current.stake * lockedMult);
-    setLastWinAmt(payout);
-    setSubText(`Bailed Out @ ${lockedMult.toFixed(2)}×! (+${payout.toLocaleString()} SC)`);
+    if (res.won) {
+      setCashedOut(true);
+      setLastWinAmt(res.payout);
+      setCurrentMult(res.bailed_at);
+      setSubText(`Bailed Out @ ${res.bailed_at.toFixed(2)}×! (+${res.payout.toLocaleString()} SC)`);
+      playSound('win');
+      triggerWinVibration(res.bailed_at);
+      showToast(`🚀 Bailed out @ ${res.bailed_at.toFixed(2)}×! Won ${res.payout.toLocaleString()} SC`, 'gold');
+    } else {
+      setCrashed(true);
+      setCurrentMult(res.crash_point);
+      setSubText(`WIPED OUT @ ${res.crash_point.toFixed(2)}×!`);
+      spawnExplosion(res.crash_point);
+      drawCanvas(res.crash_point, true);
+      playSound('loss');
+      triggerHaptic([40, 60]);
+      showToast(`💥 Crashed at ${res.crash_point.toFixed(2)}× — your bail @ ${bail.toFixed(2)}× was too late.`, 'danger');
+    }
+  };
 
-    recordGameOutcome('Ollie Crash', stateRef.current.stake, payout, `Bailed out @ ${lockedMult.toFixed(2)}×`, true);
-    playSound('win');
-    triggerWinVibration(lockedMult);
-    showToast(`🚀 Bailed out @ ${lockedMult.toFixed(2)}×! Won ${payout.toLocaleString()} SC`, 'gold');
+  const cashOut = () => {
+    void cashOutAt(stateRef.current.currentMult);
   };
 
   const currentPayout = Math.round(stake * currentMult);
@@ -319,9 +339,11 @@ export default function CrashGame({ stake }) {
             className="btn btn-gold btn-lg"
             style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
             onClick={cashOut}
-            disabled={cashedOut}
+            disabled={cashedOut || settling}
           >
-            {cashedOut ? (
+            {settling ? (
+              <span>Settling with server…</span>
+            ) : cashedOut ? (
               <>✅ Locked In! (+{lastWinAmt.toLocaleString()} SC)</>
             ) : (
               <>

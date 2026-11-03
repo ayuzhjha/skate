@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useStore } from '../hooks';
+import { api, newIdempotency } from '../api';
 import {
-  recordTransaction,
-  recordGameOutcome,
-  nextProvablyFairFloat,
+  applyServerBalance,
+  recordLocalGameResult,
+  handleGameError,
   playSound,
   triggerHaptic,
   triggerWinVibration,
@@ -16,6 +17,7 @@ export default function MinesGame({ stake }) {
   const state = useStore();
   const [bombCount, setBombCount] = useState(5);
   const [isActive, setIsActive] = useState(false);
+  const [settling, setSettling] = useState(false);
   const [tiles, setTiles] = useState(Array.from({ length: 25 }, () => ({ isBomb: false, isRevealed: false })));
   const [gemsFound, setGemsFound] = useState(0);
   const [currentMult, setCurrentMult] = useState(1.0);
@@ -33,14 +35,15 @@ export default function MinesGame({ stake }) {
     setGemsFound(0);
     setCurrentMult(1.0);
 
-    // Record bet
-    recordTransaction('bet', `Emerald Mines (${bombCount} Bombs)`, -stake, `Stake: ${stake} SC`);
+    // No server call here: tile picking is visual only. The stake is
+    // settled exactly once by the server — at cashout, or on a bomb hit.
     playSound('chip');
 
-    // Provably fair bomb shuffle
+    // Local bomb shuffle (visual layout only — the server settles purely
+    // on the revealed-gem count at cashout).
     const indices = Array.from({ length: 25 }, (_, i) => i);
     for (let i = 24; i > 0; i--) {
-      const j = Math.floor(nextProvablyFairFloat() * (i + 1));
+      const j = Math.floor(Math.random() * (i + 1));
       const tmp = indices[i];
       indices[i] = indices[j];
       indices[j] = tmp;
@@ -65,7 +68,8 @@ export default function MinesGame({ stake }) {
     newTiles[idx] = { ...t, isRevealed: true };
 
     if (t.isBomb) {
-      // Hit a bomb -> reveal all bombs
+      // Hit a bomb -> reveal all bombs, round over. The loss settles
+      // server-side: the stake is debited with payout 0 (see /mines/bomb).
       newTiles.forEach((tile, i) => {
         if (tile.isBomb) newTiles[i] = { ...tile, isRevealed: true };
       });
@@ -73,8 +77,13 @@ export default function MinesGame({ stake }) {
       setIsActive(false);
       playSound('loss');
       triggerHaptic([40, 60, 80]);
-      recordGameOutcome('Emerald Mines', gameStake, 0, `Hit bomb after ${gemsFound} gems`);
-      showToast('💥 Boom! Hit a Mine — Wager Lost', 'danger');
+      recordLocalGameResult('Emerald Mines', gameStake, 0, false);
+      showToast('💥 Boom! Hit a Mine — round over, no cashout', 'danger');
+      setSettling(true);
+      api.minesBomb(gameStake, newIdempotency())
+        .then((res) => applyServerBalance(res.balance, res.xp))
+        .catch((err) => void handleGameError(err))
+        .finally(() => setSettling(false));
     } else {
       // Found a safe gem
       const newGems = gemsFound + 1;
@@ -91,28 +100,42 @@ export default function MinesGame({ stake }) {
 
       // Check if all safe gems cleared!
       if (newGems === 25 - bombCount) {
-        // Complete sweep!
+        // Complete sweep — settle through the server like a cashout.
         setIsActive(false);
-        const payout = Math.round(gameStake * nextM);
-        recordGameOutcome('Emerald Mines', gameStake, payout, `Swept all ${newGems} gems!`);
-        triggerWinVibration(nextM);
-        showToast(`🏆 FULL BOARD CLEAR! Won ${payout.toLocaleString()} SC!`, 'gold');
+        void settleMines(newGems, nextM, `🏆 FULL BOARD CLEAR!`);
       }
     }
   };
 
-  const cashOut = () => {
-    if (!isActive || gemsFound === 0) return;
+  // Settle a mines round through the server: it debits the stake and pays
+  // the multiplier for the revealed-gem count. Returns true on success.
+  const settleMines = async (gems, localMult, winPrefix) => {
+    if (settling) return false;
+    setSettling(true);
+    try {
+      const res = await api.mines(gameStake, bombCount, gems, newIdempotency());
+      applyServerBalance(res.balance, res.xp);
+      recordLocalGameResult('Emerald Mines', gameStake, res.payout, false);
+      triggerWinVibration(res.multiplier);
+      showToast(`${winPrefix} Won ${res.payout.toLocaleString()} SC (${res.multiplier}×)!`, 'gold');
+      return true;
+    } catch (err) {
+      await handleGameError(err);
+      return false;
+    } finally {
+      setSettling(false);
+    }
+  };
+
+  const cashOut = async () => {
+    if (!isActive || gemsFound === 0 || settling) return;
     setIsActive(false);
-    const payout = Math.round(gameStake * currentMult);
 
     // Reveal remaining bombs
     const newTiles = tiles.map(t => (t.isBomb ? { ...t, isRevealed: true } : t));
     setTiles(newTiles);
 
-    recordGameOutcome('Emerald Mines', gameStake, payout, `Cashed out ${gemsFound} gems @ ${currentMult}×`);
-    triggerWinVibration(currentMult);
-    showToast(`💎 Cashed Out ${payout.toLocaleString()} SC (${currentMult}×)!`, 'gold');
+    await settleMines(gemsFound, currentMult, '💎 Cashed Out');
   };
 
   const potentialPayout = Math.round(gameStake * currentMult);
@@ -223,9 +246,11 @@ export default function MinesGame({ stake }) {
           className="btn btn-gold btn-lg"
           style={{ width: '100%' }}
           onClick={cashOut}
-          disabled={gemsFound === 0}
+          disabled={gemsFound === 0 || settling}
         >
-          {gemsFound === 0
+          {settling
+            ? 'Settling with server…'
+            : gemsFound === 0
             ? 'Pick a Tile to Unlock Cashout'
             : `Cash Out ${potentialPayout.toLocaleString()} SC (${currentMult.toFixed(2)}×)`}
         </button>

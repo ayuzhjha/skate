@@ -1,4 +1,20 @@
-/* State management — single source of truth persisted to localStorage */
+/* State management — local UI state + server wallet sync.
+ *
+ * The wallet is authoritative on the server now: credits, xp, level and the
+ * ledger come from /me and /ledger (see syncWalletFromServer), and every
+ * credit movement goes through a server endpoint. What stays local on
+ * purpose: mission/achievement progress, streak display, settings, sounds
+ * and stats displays. Mission/achievement CREDIT rewards go through
+ * POST /wallet/grant — never through a local balance write — so a local
+ * grant can never be overwritten by the next server sync.
+ *
+ * The old local-settlement helpers (recordTransaction, recordGameOutcome,
+ * addXp, the toy hash) are gone on purpose: games must never settle
+ * locally when the server is down. See recordLocalGameResult, which only
+ * updates display stats/progress after a server settlement.
+ */
+
+import { api, ApiError } from './api';
 
 const STORAGE_KEY = 'SKATE_APP_STATE_V3';
 
@@ -108,67 +124,86 @@ export function resetState() {
   saveState();
 }
 
-/* --- Hashing --- */
-export function simpleSha256Hex(str) {
-  let h1 = 0xdeadbeef ^ str.length, h2 = 0x41c6ce57 ^ str.length;
-  let h3 = 0x9e3779b9 ^ str.length, h4 = 0x85ebca6b ^ str.length;
-  for (let i = 0, ch; i < str.length; i++) {
-    ch = str.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-    h3 = Math.imul(h3 ^ ch, 2246822507);
-    h4 = Math.imul(h4 ^ ch, 3266489909);
+/* --- Server wallet sync --- */
+
+// Apply an authoritative balance (and xp/level when the server provides
+// them, e.g. game responses carry {xp, level} and daily-reward carries
+// plain numbers). Never used to invent credits — only server values.
+export function applyServerBalance(balance, xpObj = null) {
+  const s = getState();
+  if (typeof balance === 'number') s.credits = balance;
+  if (xpObj) {
+    if (typeof xpObj.xp === 'number') s.xp = xpObj.xp;
+    if (typeof xpObj.level === 'number') s.level = xpObj.level;
   }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  h3 = Math.imul(h3 ^ (h3 >>> 16), 2246822507) ^ Math.imul(h4 ^ (h4 >>> 13), 3266489909);
-  h4 = Math.imul(h4 ^ (h4 >>> 16), 2246822507) ^ Math.imul(h3 ^ (h3 >>> 13), 3266489909);
-  const hex = (n) => (n >>> 0).toString(16).padStart(8, '0');
-  return (hex(h1) + hex(h2) + hex(h3) + hex(h4) + hex(h1 ^ h3) + hex(h2 ^ h4) + hex(h1 + h2) + hex(h3 + h4)).slice(0, 64);
+  saveState();
 }
 
-export function nextProvablyFairFloat() {
-  const s = getState();
-  s.fairness.nonce += 1;
-  const hash = simpleSha256Hex(`${s.fairness.serverSeed}:${s.fairness.clientSeed}:${s.fairness.nonce}`);
-  const intVal = parseInt(hash.slice(0, 8), 16);
-  return (intVal >>> 0) / 4294967296;
-}
-
-/* --- Transactions --- */
-export function recordTransaction(type, label, delta, meta = '') {
-  const s = getState();
-  const before = s.credits;
-  const after = Math.max(0, Math.round(before + delta));
-  s.credits = after;
-  const txId = 'tx_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6);
-  const tx = {
-    id: txId,
-    ts: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-    date: new Date().toLocaleDateString(),
-    type, label, delta, balanceAfter: after, meta,
-    hash: simpleSha256Hex(`${txId}:${before}:${delta}:${after}`).slice(0, 12),
+function mapServerTx(tx) {
+  let ts = '';
+  let date = '';
+  try {
+    const d = new Date(tx.created_at);
+    ts = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    date = d.toLocaleDateString();
+  } catch {
+    ts = tx.created_at || '';
+    date = tx.created_at || '';
+  }
+  return {
+    id: tx.tx_id,
+    ts,
+    date,
+    type: tx.tx_type,
+    label: tx.label,
+    delta: tx.delta,
+    balanceAfter: tx.balance_after,
+    meta: tx.game_mode || '',
+    hash: String(tx.tx_id || '').slice(0, 12),
   };
-  s.ledger.unshift(tx);
-  if (s.ledger.length > 60) s.ledger.pop();
-  saveState();
-  return tx;
 }
 
-/* --- XP & Progression --- */
-export function addXp(amount) {
+// Fetch /me + /ledger and overwrite the local wallet view. Returns the /me
+// payload so callers (auth) can keep the profile in step. Avatar is kept
+// local on purpose: the server never changes it, so a sync must not wipe
+// the player's picker choice. Throws ApiError on failure; callers decide
+// whether to surface it (the server banner covers network failures).
+export async function syncWalletFromServer() {
+  const me = await api.me();
   const s = getState();
-  s.xp += amount;
-  let needed = s.level * 200;
-  while (s.xp >= needed) {
-    s.xp -= needed;
-    s.level += 1;
-    needed = s.level * 200;
-    const bonus = s.level * 150;
-    recordTransaction('reward', `Level ${s.level} Rank-Up`, bonus, `Promoted to Level ${s.level}`);
-    showToast(`🎉 Level Up! Reached Level ${s.level} (+${bonus} SC)`, 'gold');
-  }
+  s.credits = me.credits;
+  s.xp = me.xp;
+  s.level = me.level;
+  s.auth.username = me.username;
+  s.auth.email = me.email;
+  s.auth.isRegistered = !me.is_guest;
+  if (typeof me.streak_day === 'number') s.streak.currentDay = me.streak_day;
   saveState();
+  try {
+    const page = await api.ledger(100, 0);
+    const s2 = getState();
+    s2.ledger = (page.transactions || []).map(mapServerTx);
+    saveState();
+  } catch {
+    // Ledger is display-only; a failed ledger fetch must not fail the sync.
+  }
+  return me;
+}
+
+// Shared game-error handling: show the server's message and refresh the
+// wallet so the displayed balance matches the server after a rejection
+// (e.g. INSUFFICIENT_FUNDS). Never settles anything locally.
+export async function handleGameError(err) {
+  if (err instanceof ApiError) {
+    showToast(err.message, 'danger');
+  } else {
+    showToast('Something went wrong — please try again', 'danger');
+  }
+  try {
+    await syncWalletFromServer();
+  } catch {
+    // Server unreachable: the banner already explains it.
+  }
 }
 
 /* --- Missions --- */
@@ -180,37 +215,84 @@ export function updateMissionProgress(id, amount) {
   saveState();
 }
 
-export function claimMission(id) {
+/* Claim a completed mission's SC reward through the server grant endpoint.
+ * The idempotency key is derived from the mission id, so a double-click or
+ * retry can never pay twice: a DUPLICATE response means the grant already
+ * landed, so it still counts as claimed. Returns true when claimed. */
+const missionClaiming = new Set();
+
+export async function claimMission(id) {
   const s = getState();
   const m = s.missions.find(x => x.id === id);
-  if (!m || m.claimed || m.progress < m.target) return;
-  m.claimed = true;
-  recordTransaction('reward', `Mission: ${m.title}`, m.reward, m.desc);
-  addXp(60);
-  showToast(`🎯 Claimed +${m.reward} SC & +60 XP!`, 'emerald');
+  if (!m || m.claimed || m.progress < m.target || missionClaiming.has(id)) return false;
+  missionClaiming.add(id);
+  try {
+    const res = await api.grant('mission', id, m.reward, `mission_${id}`);
+    m.claimed = true;
+    applyServerBalance(res.credits);
+    showToast(`🎯 Claimed +${m.reward} SC!`, 'emerald');
+    return true;
+  } catch (err) {
+    if (err instanceof ApiError && err.code === 'DUPLICATE') {
+      m.claimed = true;
+      saveState();
+      try { await syncWalletFromServer(); } catch {}
+      showToast(`🎯 Already claimed +${m.reward} SC!`, 'emerald');
+      return true;
+    }
+    showToast(err instanceof ApiError ? err.message : 'Claim failed — try again', 'danger');
+    return false;
+  } finally {
+    missionClaiming.delete(id);
+  }
 }
 
-/* --- Achievements --- */
+/* --- Achievements (progress local, credits via server grant) --- */
+async function grantAchievement(ach) {
+  try {
+    const res = await api.grant('achievement', ach.id, 200, `ach_${ach.id}`);
+    ach.unlocked = true;
+    saveState();
+    applyServerBalance(res.credits);
+    showToast(`🏆 ${ach.title} Unlocked! (+200 SC)`, 'gold');
+  } catch (err) {
+    if (err instanceof ApiError && err.code === 'DUPLICATE') {
+      // Grant already landed on an earlier attempt — unlock without re-paying.
+      ach.unlocked = true;
+      saveState();
+      try { await syncWalletFromServer(); } catch {}
+      showToast(`🏆 ${ach.title} Unlocked!`, 'gold');
+    } else {
+      // Leave it locked so the next settled game retries the grant.
+      showToast(err instanceof ApiError ? err.message : 'Achievement reward failed', 'danger');
+    }
+  }
+}
+
+// Check locally-tracked achievement conditions after a settled game. Newly
+// eligible achievements fire their server grant (fire-and-forget: the grant
+// itself toasts, and a failed grant retries on the next game).
 export function checkAchievements() {
   const s = getState();
-  const unlock = (id) => {
+  const eligible = [];
+  const maybe = (id, cond) => {
     const ach = s.achievements.find(a => a.id === id);
-    if (ach && !ach.unlocked) {
-      ach.unlocked = true;
-      recordTransaction('reward', `Achievement: ${ach.title}`, 200, ach.desc);
-      showToast(`🏆 ${ach.title} Unlocked! (+200 SC)`, 'gold');
-    }
+    if (ach && !ach.unlocked && cond) eligible.push(ach);
   };
-  if (s.stats.wins >= 1) unlock('a_first_win');
-  if (s.stats.blackjacks >= 1) unlock('a_natural_bj');
-  if (s.stats.bestWinStreak >= 3) unlock('a_streak3');
-  if (s.credits >= 5000) unlock('a_bank_5k');
-  if (s.auth.isRegistered) unlock('a_registered');
-  saveState();
+  if (s.stats.wins >= 1) maybe('a_first_win', true);
+  if (s.stats.blackjacks >= 1) maybe('a_natural_bj', true);
+  if (s.stats.bestWinStreak >= 3) maybe('a_streak3', true);
+  if (s.credits >= 5000) maybe('a_bank_5k', true);
+  if (s.auth.isRegistered) maybe('a_registered', true);
+  eligible.forEach((ach) => { void grantAchievement(ach); });
 }
 
-/* --- Game Outcome Recording --- */
-export function recordGameOutcome(gameName, stake, totalReturn, metaDesc, isSpecial = false) {
+/* --- Local display-only result recording ---
+ * Called AFTER a server settlement. Updates stats displays, mission
+ * progress and achievement eligibility, and shows the win/lose modal.
+ * It never touches credits or the ledger — those come from the server
+ * response via applyServerBalance. Sounds are played by the game itself. */
+export function recordLocalGameResult(gameName, stake, totalReturn, isSpecial = false) {
   const s = getState();
   const netDelta = Math.round(totalReturn - stake);
   s.stats.totalBets += 1;
@@ -218,10 +300,6 @@ export function recordGameOutcome(gameName, stake, totalReturn, metaDesc, isSpec
   s.stats.netProfit += netDelta;
   updateMissionProgress('m_play5', 1);
   updateMissionProgress('m_wager1000', stake);
-
-  if (totalReturn > 0) {
-    recordTransaction('bet', `${gameName} Payout`, Math.round(totalReturn), metaDesc);
-  }
 
   if (netDelta > 0) {
     s.stats.wins += 1;
@@ -233,13 +311,10 @@ export function recordGameOutcome(gameName, stake, totalReturn, metaDesc, isSpec
     if (isSpecial) {
       const ach = s.achievements.find(a => a.id === 'a_split_master');
       if (ach && !ach.unlocked) {
-        ach.unlocked = true;
-        recordTransaction('reward', 'Achievement: Reflex Pro', 200, ach.desc);
+        // Reflex Pro unlocks via the grant path like other achievements.
+        void grantAchievement(ach);
       }
     }
-    addXp(35);
-    playSound('win');
-    triggerWinVibration(totalReturn / (stake || 1));
     if (s.settings.outcomePopups !== false) {
       setTimeout(() => {
         showOutcomeModal({
@@ -257,9 +332,6 @@ export function recordGameOutcome(gameName, stake, totalReturn, metaDesc, isSpec
   } else if (netDelta < 0) {
     s.stats.losses += 1;
     s.stats.currentWinStreak = 0;
-    addXp(15);
-    playSound('loss');
-    triggerHaptic(25);
     if (s.settings.outcomePopups !== false) {
       setTimeout(() => {
         showOutcomeModal({
@@ -273,8 +345,6 @@ export function recordGameOutcome(gameName, stake, totalReturn, metaDesc, isSpec
     }
   } else {
     s.stats.pushes += 1;
-    addXp(20);
-    playSound('chip');
   }
 
   s.stats.bankrollHistory.push(s.credits);
@@ -290,48 +360,61 @@ export function isDailyClaimAvailable() {
   return s.streak.lastClaimDate !== todayStr;
 }
 
-export function claimDailyReward() {
-  const s = getState();
-  const todayStr = new Date().toISOString().slice(0, 10);
-  if (s.streak.lastClaimDate === todayStr) {
-    showToast("Today's bonus already claimed!", 'blue');
-    return;
+/* Wallet claims — all server-side. The server is the source of truth for
+ * eligibility (faucet 1/hour, bailout under 200 SC, streak once/day UTC);
+ * a rejection shows the server's message. In-flight guards stop double
+ * taps from firing duplicate requests. */
+let walletBusy = false;
+
+export async function claimDailyReward() {
+  if (walletBusy) return;
+  walletBusy = true;
+  try {
+    const res = await api.dailyReward();
+    const s = getState();
+    const todayStr = new Date().toISOString().slice(0, 10);
+    s.streak.lastClaimDate = todayStr;
+    s.streak.totalClaims += 1;
+    s.streak.currentDay = res.streak_day;
+    applyServerBalance(res.credits, { xp: res.xp, level: res.level });
+    playSound('blackjack');
+    triggerHaptic([25, 50, 25]);
+    showToast(`🎁 Day Streak Claimed! +${res.granted.toLocaleString()} SC`, 'gold');
+  } catch (err) {
+    showToast(err instanceof ApiError ? err.message : 'Claim failed — try again', 'danger');
+  } finally {
+    walletBusy = false;
   }
-  const idx = (s.streak.currentDay - 1) % 7;
-  const rewardAmt = STREAK_REWARDS[idx];
-  s.streak.lastClaimDate = todayStr;
-  s.streak.totalClaims += 1;
-  recordTransaction('reward', `Day ${s.streak.currentDay} Streak`, rewardAmt, 'Daily Login Reward');
-  addXp(50);
-  s.streak.currentDay = (s.streak.currentDay % 7) + 1;
-  playSound('blackjack');
-  triggerHaptic([25, 50, 25]);
-  showToast(`🎁 Day Streak Claimed! +${rewardAmt.toLocaleString()} SC`, 'gold');
-  saveState();
 }
 
-export function simulateNextDay() {
-  const s = getState();
-  s.streak.lastClaimDate = '2000-01-01';
-  saveState();
-  showToast('⏩ Simulated next day!', 'blue');
-}
-
-export function claimFaucet() {
-  recordTransaction('reward', 'Complimentary Faucet', 150, 'Free Top-Up');
-  playSound('chip');
-  showToast('💧 +150 SC Faucet claimed!', 'emerald');
-}
-
-export function claimBailout() {
-  const s = getState();
-  if (s.credits >= 200) {
-    showToast('Bailout is for balances under 200 SC!', 'blue');
-    return;
+export async function claimFaucet() {
+  if (walletBusy) return;
+  walletBusy = true;
+  try {
+    const res = await api.faucet();
+    applyServerBalance(res.credits);
+    playSound('chip');
+    showToast('💧 +150 SC Faucet claimed!', 'emerald');
+  } catch (err) {
+    showToast(err instanceof ApiError ? err.message : 'Faucet failed — try again', 'danger');
+  } finally {
+    walletBusy = false;
   }
-  recordTransaction('reward', 'Zero-Balance Bailout', 500, 'Free Bailout');
-  playSound('win');
-  showToast('⚡ +500 SC Bailout added!', 'gold');
+}
+
+export async function claimBailout() {
+  if (walletBusy) return;
+  walletBusy = true;
+  try {
+    const res = await api.bailout();
+    applyServerBalance(res.credits);
+    playSound('win');
+    showToast('⚡ +500 SC Bailout added!', 'gold');
+  } catch (err) {
+    showToast(err instanceof ApiError ? err.message : 'Bailout failed — try again', 'danger');
+  } finally {
+    walletBusy = false;
+  }
 }
 
 /* --- Audio & Haptics --- */

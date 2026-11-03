@@ -20,8 +20,10 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-DB_PATH = os.environ.get("SKATE_DB_PATH", "skate_production.db")
-SERVER_SECRET = os.environ.get("SKATE_HMAC_SECRET", secrets.token_hex(32))
+DB_PATH = os.environ.get("SKATE_DB_PATH", "skate_dev.db")
+SERVER_SECRET = os.environ.get("SKATE_SERVER_SECRET", "")
+if not SERVER_SECRET:
+    raise RuntimeError("SKATE_SERVER_SECRET is not set. Refusing to run with a default secret.")
 
 MIN_STAKE = 10
 MAX_STAKE = 5000

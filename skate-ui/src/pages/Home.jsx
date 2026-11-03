@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { TrendingUp, Gamepad2, Gift, Trophy, Crown, Flame, ChevronRight } from 'lucide-react';
 import { useStore } from '../hooks';
@@ -19,6 +20,17 @@ export default function HomePage() {
   const xpPct = Math.min(100, Math.round((state.xp / xpNeeded) * 100));
   const winRate = state.stats.totalBets > 0 ? ((state.stats.wins / state.stats.totalBets) * 100).toFixed(1) : '0.0';
   const canClaim = isDailyClaimAvailable();
+  const [claiming, setClaiming] = useState(false);
+
+  const onClaimStreak = async () => {
+    if (claiming) return;
+    setClaiming(true);
+    try {
+      await claimDailyReward();
+    } finally {
+      setClaiming(false);
+    }
+  };
 
   return (
     <div className="home-page-container">
@@ -65,10 +77,11 @@ export default function HomePage() {
           </button>
           <button
             className="btn-hero-glass"
-            onClick={canClaim ? claimDailyReward : () => navigate('/rewards')}
+            onClick={canClaim ? onClaimStreak : () => navigate('/rewards')}
+            disabled={claiming}
           >
             <Gift size={18} color="#facc15" />
-            <span>{canClaim ? 'Claim Streak' : 'Streak Claimed'}</span>
+            <span>{claiming ? 'Claiming…' : canClaim ? 'Claim Streak' : 'Streak Claimed'}</span>
           </button>
         </div>
       </div>

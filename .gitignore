@@ -1,0 +1,26 @@
+# Build outputs & binaries — never commit these
+*.apk
+*.aab
+*.db
+*.sqlite
+*.sqlite3
+dist/
+
+# Dependencies
+node_modules/
+
+# Env & secrets — never commit a real key
+.env
+.env.*
+!.env.example
+
+# Android build outputs
+skate-ui/android/app/build/
+*.keystore
+*.jks
+
+# OS / editor
+.DS_Store
+__pycache__/
+*.pyc
+backend-venv/

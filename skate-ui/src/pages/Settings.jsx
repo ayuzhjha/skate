@@ -1,12 +1,11 @@
-import { useState } from 'react';
-import { Settings as SettingsIcon, ShieldCheck, Volume2, Smartphone, RotateCcw, Key, RefreshCw, Coins, Bell, Sparkles, Award } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Settings as SettingsIcon, ShieldCheck, Volume2, Smartphone, RotateCcw, Key, RefreshCw, Bell, Sparkles, Award } from 'lucide-react';
 import { useStore } from '../hooks';
+import { api, ApiError } from '../api';
 import {
   getState,
   saveState,
   resetState,
-  recordTransaction,
-  simpleSha256Hex,
   showToast,
   playSound,
   triggerWinVibration,
@@ -14,17 +13,51 @@ import {
 } from '../store';
 import { triggerRandomEngagementNotification } from '../notificationService';
 
+// Real provably-fair verification: HMAC-SHA256 with key = server_seed and
+// message = "client_seed:nonce:cursor". The first 4 bytes (big-endian)
+// divided by 2^32 give the round float; dice roll = float × 100.
+async function hmacFloat(serverSeed, clientSeed, nonce, cursor) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(serverSeed), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(`${clientSeed}:${nonce}:${cursor}`));
+  const bytes = new Uint8Array(sig);
+  const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const intVal = (((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]) >>> 0);
+  return { hex, floatVal: intVal / 4294967296 };
+}
+
 export default function SettingsPage() {
   const state = useStore();
-  const [clientSeedInput, setClientSeedInput] = useState(state.fairness.clientSeed);
-  const [verifyNonce, setVerifyNonce] = useState(state.fairness.nonce);
+  // Server fairness state (GET /fairness). Local fairness values are gone:
+  // the server owns seeds and nonce, and this page only displays them.
+  const [fairness, setFairness] = useState(null);
+  const [fairnessError, setFairnessError] = useState('');
+  const [clientSeedInput, setClientSeedInput] = useState('');
+  const [revealedSeed, setRevealedSeed] = useState('');
+  const [rotating, setRotating] = useState(false);
+  const [savingSeed, setSavingSeed] = useState(false);
+  const [verifyServerSeed, setVerifyServerSeed] = useState('');
+  const [verifyClientSeed, setVerifyClientSeed] = useState('');
+  const [verifyNonce, setVerifyNonce] = useState(1);
+  const [verifyCursor, setVerifyCursor] = useState(0);
   const [verifyOutput, setVerifyOutput] = useState(null);
+  const [verifying, setVerifying] = useState(false);
 
-  // Custom credits state with secret key protection
-  const [customCredits, setCustomCredits] = useState('');
-  const [specialKey, setSpecialKey] = useState('');
+  const loadFairness = useCallback(async () => {
+    try {
+      const f = await api.fairness();
+      setFairness(f);
+      setFairnessError('');
+      setClientSeedInput(f.client_seed);
+      setVerifyClientSeed((prev) => prev || f.client_seed);
+    } catch (err) {
+      setFairnessError(err instanceof ApiError ? err.message : 'Failed to load fairness info');
+    }
+  }, []);
 
-  const serverSeedHash = simpleSha256Hex(state.fairness.serverSeed);
+  useEffect(() => { void loadFairness(); }, [loadFairness]);
 
   const toggleSound = () => {
     const s = getState();
@@ -90,54 +123,51 @@ export default function SettingsPage() {
     });
   };
 
-  const updateClientSeed = (e) => {
+  const updateClientSeed = async (e) => {
     e.preventDefault();
-    if (!clientSeedInput.trim()) return;
-    const s = getState();
-    s.fairness.clientSeed = clientSeedInput.trim();
-    saveState();
-    showToast('Client seed updated!', 'emerald');
-  };
-
-  const regenerateServerSeed = () => {
-    const s = getState();
-    s.fairness.serverSeed = 'srv_' + Math.random().toString(36).substring(2, 15) + '_skate2026';
-    s.fairness.nonce = 1;
-    saveState();
-    showToast('New Server Seed pair generated & Nonce reset to 1', 'gold');
-  };
-
-  const runVerification = (e) => {
-    e.preventDefault();
-    const hash = simpleSha256Hex(`${state.fairness.serverSeed}:${state.fairness.clientSeed}:${verifyNonce}`);
-    const intVal = parseInt(hash.slice(0, 8), 16);
-    const floatVal = (intVal >>> 0) / 4294967296;
-    const diceRoll = +(floatVal * 100).toFixed(2);
-    setVerifyOutput({ hash, floatVal: floatVal.toFixed(6), diceRoll });
-  };
-
-  const handleCustomCredits = (e) => {
-    e.preventDefault();
-    if (specialKey.trim() !== 'fcukyou') {
-      showToast('Invalid Special Key! Access Denied', 'danger');
-      return;
+    if (!clientSeedInput.trim() || savingSeed) return;
+    setSavingSeed(true);
+    try {
+      await api.setClientSeed(clientSeedInput.trim());
+      await loadFairness();
+      showToast('Client seed updated on the server!', 'emerald');
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : 'Failed to update client seed', 'danger');
+    } finally {
+      setSavingSeed(false);
     }
-    const amt = parseInt(customCredits, 10);
-    if (isNaN(amt) || amt < 0) {
-      showToast('Please enter a valid credit amount', 'danger');
-      return;
-    }
+  };
 
-    const s = getState();
-    const prev = s.credits;
-    s.credits = amt;
-    s.stats.bankrollHistory.push(amt);
-    recordTransaction('reward', 'Custom Credit Override', amt - prev, `Authorized override via special key`);
-    saveState();
-    playSound('win');
-    showToast(`🎉 Balance updated to ${amt.toLocaleString()} SC!`, 'gold');
-    setCustomCredits('');
-    setSpecialKey('');
+  const regenerateServerSeed = async () => {
+    if (rotating) return;
+    setRotating(true);
+    try {
+      const res = await api.rotateFairness();
+      setRevealedSeed(res.revealed_server_seed);
+      setVerifyServerSeed(res.revealed_server_seed);
+      await loadFairness();
+      showToast('Seed rotated — the old seed is revealed below so past rounds stay verifiable', 'gold');
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : 'Failed to rotate seed', 'danger');
+    } finally {
+      setRotating(false);
+    }
+  };
+
+  const runVerification = async (e) => {
+    e.preventDefault();
+    if (!verifyServerSeed.trim() || !verifyClientSeed.trim() || verifying) return;
+    setVerifying(true);
+    try {
+      const { hex, floatVal } = await hmacFloat(
+        verifyServerSeed.trim(), verifyClientSeed.trim(), verifyNonce, verifyCursor
+      );
+      setVerifyOutput({ hash: hex, floatVal: floatVal.toFixed(6), diceRoll: +(floatVal * 100).toFixed(2) });
+    } catch {
+      showToast('Verification failed — this browser may not support WebCrypto', 'danger');
+    } finally {
+      setVerifying(false);
+    }
   };
 
   const handleResetData = () => {
@@ -249,61 +279,7 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Custom Credits Special Key Option */}
-      <div className="section-header-row">
-        <div className="section-title-wrap">
-          <Coins size={18} color="#facc15" />
-          <span className="section-title-text" style={{ color: '#facc15' }}>Grant Custom Credits</span>
-        </div>
-      </div>
-
-      <div className="card" style={{ marginBottom: 20, borderColor: 'rgba(250, 204, 21, 0.35)', padding: 14 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Inject Custom Virtual Credits</div>
-        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>
-          Requires the authorization key to inject or set your virtual credits to any custom amount.
-        </div>
-        <form onSubmit={handleCustomCredits} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 8 }}>
-            <input
-              type="number"
-              placeholder="Amount (e.g. 50000)"
-              value={customCredits}
-              onChange={(e) => setCustomCredits(e.target.value)}
-              style={{
-                background: 'rgba(255, 255, 255, 0.05)',
-                border: '1px solid var(--border)',
-                color: 'var(--text-primary)',
-                padding: '9px 12px',
-                borderRadius: 8,
-                fontSize: 13,
-                fontFamily: 'var(--font-mono)'
-              }}
-              min="0"
-              required
-            />
-            <input
-              type="password"
-              placeholder="Special Key"
-              value={specialKey}
-              onChange={(e) => setSpecialKey(e.target.value)}
-              style={{
-                background: 'rgba(255, 255, 255, 0.05)',
-                border: '1px solid var(--border)',
-                color: 'var(--text-primary)',
-                padding: '9px 12px',
-                borderRadius: 8,
-                fontSize: 13
-              }}
-              required
-            />
-          </div>
-          <button type="submit" className="btn btn-gold btn-sm" style={{ width: '100%', fontWeight: 800 }}>
-            <Key size={14} style={{ marginRight: 4 }} /> Authorize & Apply Credits
-          </button>
-        </form>
-      </div>
-
-      {/* Provably Fair Seeds */}
+      {/* Provably Fair Seeds (server-owned) */}
       <div className="section-header-row">
         <div className="section-title-wrap">
           <ShieldCheck size={18} color="#00e676" />
@@ -313,56 +289,82 @@ export default function SettingsPage() {
 
       <div className="card" style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 14 }}>
-          Every outcome is pre-committed cryptographically using HMAC-SHA256. Neither the house nor the player can tamper with round generation.
+          Every outcome is pre-committed cryptographically using HMAC-SHA256. Neither the house nor the player can tamper with round generation. The server owns the seeds — this page only displays them.
         </div>
 
-        {/* Server Seed Hash */}
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 4 }}>
-            SERVER SEED (SHA-256 COMMITTED HASH)
+        {fairnessError ? (
+          <div style={{ fontSize: 12, color: 'var(--red)', marginBottom: 12 }}>
+            {fairnessError}
+            <button className="btn btn-primary btn-sm" style={{ marginLeft: 10 }} onClick={loadFairness}>Retry</button>
           </div>
-          <div style={{
-            background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8,
-            padding: '8px 10px', fontFamily: 'var(--font-mono)', fontSize: 11, wordBreak: 'break-all',
-            color: 'var(--emerald)'
-          }}>
-            {serverSeedHash}
-          </div>
-        </div>
+        ) : !fairness ? (
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>Loading fairness info…</div>
+        ) : (
+          <>
+            {/* Server Seed Hash */}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 4 }}>
+                SERVER SEED (SHA-256 COMMITTED HASH)
+              </div>
+              <div style={{
+                background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8,
+                padding: '8px 10px', fontFamily: 'var(--font-mono)', fontSize: 11, wordBreak: 'break-all',
+                color: 'var(--emerald)'
+              }}>
+                {fairness.server_seed_hash}
+              </div>
+            </div>
 
-        {/* Client Seed Input */}
-        <form onSubmit={updateClientSeed} style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 4 }}>
-            CLIENT SEED (CUSTOMIZABLE)
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input
-              type="text"
-              value={clientSeedInput}
-              onChange={(e) => setClientSeedInput(e.target.value)}
-              style={{
-                flex: 1, background: 'var(--bg-elevated)', border: '1px solid var(--border)',
-                color: 'var(--text-primary)', padding: '6px 10px', borderRadius: 8,
-                fontFamily: 'var(--font-mono)', fontSize: 12
-              }}
-            />
-            <button type="submit" className="btn btn-primary btn-sm">
-              Save
-            </button>
-          </div>
-        </form>
+            {/* Client Seed Input */}
+            <form onSubmit={updateClientSeed} style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 4 }}>
+                CLIENT SEED (CUSTOMIZABLE)
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  type="text"
+                  value={clientSeedInput}
+                  onChange={(e) => setClientSeedInput(e.target.value)}
+                  style={{
+                    flex: 1, background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+                    color: 'var(--text-primary)', padding: '6px 10px', borderRadius: 8,
+                    fontFamily: 'var(--font-mono)', fontSize: 12
+                  }}
+                />
+                <button type="submit" className="btn btn-primary btn-sm" disabled={savingSeed}>
+                  {savingSeed ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </form>
 
-        {/* Nonce & Regenerate */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 }}>
-          <div>
-            <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)' }}>CURRENT NONCE</div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 16, fontWeight: 800 }}>#{state.fairness.nonce}</div>
-          </div>
-          <button className="btn btn-surface btn-sm" onClick={regenerateServerSeed}>
-            <RefreshCw size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
-            New Seed Pair
-          </button>
-        </div>
+            {/* Nonce & Rotate */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 }}>
+              <div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)' }}>CURRENT NONCE</div>
+                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 16, fontWeight: 800 }}>#{fairness.nonce}</div>
+              </div>
+              <button className="btn btn-surface btn-sm" onClick={regenerateServerSeed} disabled={rotating}>
+                <RefreshCw size={13} style={{ verticalAlign: 'middle', marginRight: 4 }} />
+                {rotating ? 'Rotating…' : 'Rotate Seed (reveal old)'}
+              </button>
+            </div>
+
+            {revealedSeed && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-dim)', marginBottom: 4 }}>
+                  REVEALED OLD SERVER SEED (PAST ROUNDS STAY VERIFIABLE)
+                </div>
+                <div style={{
+                  background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 8,
+                  padding: '8px 10px', fontFamily: 'var(--font-mono)', fontSize: 11, wordBreak: 'break-all',
+                  color: 'var(--gold)'
+                }}>
+                  {revealedSeed}
+                </div>
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {/* Cryptographic Verifier Tool */}
@@ -374,22 +376,61 @@ export default function SettingsPage() {
       </div>
 
       <div className="card" style={{ marginBottom: 20 }}>
-        <form onSubmit={runVerification} style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 12 }}>
+          Recompute a past round&apos;s float from its revealed server seed: HMAC-SHA256(key = server seed, message = &quot;client_seed:nonce:cursor&quot;). Dice uses cursor 0; Plinko uses cursors 0–7.
+        </div>
+        <form onSubmit={runVerification} style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 10 }}>
           <input
-            type="number"
-            min="1"
-            value={verifyNonce}
-            onChange={(e) => setVerifyNonce(Number(e.target.value))}
-            placeholder="Nonce #"
+            type="text"
+            value={verifyServerSeed}
+            onChange={(e) => setVerifyServerSeed(e.target.value)}
+            placeholder="Revealed server seed (paste after a rotation)"
             style={{
-              width: 100, background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+              background: 'var(--bg-elevated)', border: '1px solid var(--border)',
               color: 'var(--text-primary)', padding: '6px 10px', borderRadius: 8,
               fontFamily: 'var(--font-mono)', fontSize: 12
             }}
           />
-          <button type="submit" className="btn btn-secondary btn-sm" style={{ flex: 1 }}>
-            Compute Output Hash
-          </button>
+          <input
+            type="text"
+            value={verifyClientSeed}
+            onChange={(e) => setVerifyClientSeed(e.target.value)}
+            placeholder="Client seed"
+            style={{
+              background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+              color: 'var(--text-primary)', padding: '6px 10px', borderRadius: 8,
+              fontFamily: 'var(--font-mono)', fontSize: 12
+            }}
+          />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              type="number"
+              min="0"
+              value={verifyNonce}
+              onChange={(e) => setVerifyNonce(Number(e.target.value))}
+              placeholder="Nonce #"
+              style={{
+                flex: 1, background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+                color: 'var(--text-primary)', padding: '6px 10px', borderRadius: 8,
+                fontFamily: 'var(--font-mono)', fontSize: 12
+              }}
+            />
+            <input
+              type="number"
+              min="0"
+              value={verifyCursor}
+              onChange={(e) => setVerifyCursor(Number(e.target.value))}
+              placeholder="Cursor"
+              style={{
+                flex: 1, background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+                color: 'var(--text-primary)', padding: '6px 10px', borderRadius: 8,
+                fontFamily: 'var(--font-mono)', fontSize: 12
+              }}
+            />
+            <button type="submit" className="btn btn-secondary btn-sm" disabled={verifying}>
+              {verifying ? 'Computing…' : 'Compute HMAC'}
+            </button>
+          </div>
         </form>
 
         {verifyOutput && (

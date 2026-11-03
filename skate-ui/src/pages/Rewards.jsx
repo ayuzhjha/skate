@@ -1,10 +1,10 @@
-import { Calendar, Zap, Gamepad2, Crosshair, BarChart3, ChevronRight, Gift } from 'lucide-react';
+import { Calendar, Zap, Gamepad2, Crosshair, BarChart3, ChevronRight } from 'lucide-react';
+import { useState } from 'react';
 import { useStore } from '../hooks';
 import {
   STREAK_REWARDS,
   isDailyClaimAvailable,
   claimDailyReward,
-  simulateNextDay,
   claimMission
 } from '../store';
 
@@ -19,6 +19,17 @@ export default function RewardsPage() {
   const state = useStore();
   const canClaimStreak = isDailyClaimAvailable();
   const currentStreakDay = state.streak.currentDay;
+  const [claiming, setClaiming] = useState(false);
+
+  const onClaimStreak = async () => {
+    if (claiming) return;
+    setClaiming(true);
+    try {
+      await claimDailyReward();
+    } finally {
+      setClaiming(false);
+    }
+  };
 
   return (
     <div className="rewards-page-container">
@@ -65,24 +76,18 @@ export default function RewardsPage() {
         <div className="streak-actions-grid">
           <button
             className="btn-claim-streak-gold"
-            onClick={claimDailyReward}
-            disabled={!canClaimStreak}
+            onClick={onClaimStreak}
+            disabled={!canClaimStreak || claiming}
           >
             <span style={{ fontSize: 16 }}>🎁</span>
             <span>
-              {canClaimStreak
-                ? `Claim Day ${currentStreakDay} (+${STREAK_REWARDS[(currentStreakDay - 1) % 7]} SC)`
+              {claiming
+                ? 'Claiming…'
+                : canClaimStreak
+                ? `Claim Day ${currentStreakDay} (server decides the bonus)`
                 : 'Claimed Today'}
             </span>
             <ChevronRight size={16} />
-          </button>
-          <button
-            className="btn-simulate-streak-glass"
-            onClick={simulateNextDay}
-          >
-            <Calendar size={16} color="#38bdf8" />
-            <span>Simulate Next Day</span>
-            <ChevronRight size={14} />
           </button>
         </div>
       </div>

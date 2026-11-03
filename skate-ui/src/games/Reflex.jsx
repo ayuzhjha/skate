@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { useStore } from '../hooks';
+import { api, newIdempotency } from '../api';
 import {
-  recordTransaction,
-  recordGameOutcome,
+  applyServerBalance,
+  recordLocalGameResult,
+  handleGameError,
   playSound,
   triggerHaptic,
   triggerWinVibration,
@@ -12,6 +14,7 @@ import {
 export default function ReflexGame({ stake }) {
   const state = useStore();
   const [running, setRunning] = useState(false);
+  const [settling, setSettling] = useState(false);
   const [turbo, setTurbo] = useState(false);
   const [cursorPos, setCursorPos] = useState(50);
   const [lastOutcome, setLastOutcome] = useState(null);
@@ -47,7 +50,8 @@ export default function ReflexGame({ stake }) {
       stake,
     };
 
-    recordTransaction('bet', 'Precision Grind Wager', -stake, `Stake: ${stake} SC`);
+    // No server call on start: the round settles once, at stop, when the
+    // server validates the stop position.
     playSound('chip');
 
     function step() {
@@ -69,35 +73,38 @@ export default function ReflexGame({ stake }) {
     rafRef.current = requestAnimationFrame(step);
   };
 
-  const stopGrind = () => {
-    if (!stateRef.current.running) return;
+  const stopGrind = async () => {
+    if (!stateRef.current.running || settling) return;
     stateRef.current.running = false;
     setRunning(false);
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
 
     const p = stateRef.current.pos;
-    let mult = 0;
-    let zoneTitle = 'Wipeout (0×)';
-    let isWin = false;
-
-    if (p >= 46 && p <= 54) {
-      mult = payBull;
-      zoneTitle = `🎯 BULLSEYE LOCK (${mult}×)!`;
-      isWin = true;
-    } else if (p >= 35 && p <= 65) {
-      mult = payMid;
-      zoneTitle = `⚡ Emerald Grind Zone (${mult}×)!`;
-      isWin = true;
-    } else if (p >= 22 && p <= 78) {
-      mult = payOuter;
-      zoneTitle = `🛹 Blue Outer Zone (${mult}×)`;
-      isWin = true;
+    const stakeAtStop = stateRef.current.stake;
+    setSettling(true);
+    let res;
+    try {
+      res = await api.reflex(stakeAtStop, p, turbo, newIdempotency());
+    } catch (err) {
+      setSettling(false);
+      await handleGameError(err);
+      return;
     }
+    setSettling(false);
 
-    const payout = Math.round(stateRef.current.stake * mult);
+    // Multiplier, payout and balance all come from the server response.
+    const mult = res.multiplier;
+    const payout = res.payout;
+    const isWin = mult > 0;
+    let zoneTitle = 'Wipeout (0×)';
+    if (p >= 46 && p <= 54) zoneTitle = `🎯 BULLSEYE LOCK (${mult}×)!`;
+    else if (p >= 35 && p <= 65) zoneTitle = `⚡ Emerald Grind Zone (${mult}×)!`;
+    else if (p >= 22 && p <= 78) zoneTitle = `🛹 Blue Outer Zone (${mult}×)`;
+
     setLastOutcome({ pos: p, mult, payout, zoneTitle, isWin });
 
-    recordGameOutcome('Precision Grind', stateRef.current.stake, payout, `${zoneTitle} @ ${p.toFixed(1)}%`, mult >= 2.5);
+    applyServerBalance(res.balance, res.xp);
+    recordLocalGameResult('Precision Grind', stakeAtStop, payout, mult >= 2.5);
 
     if (isWin) {
       playSound('win');
@@ -252,8 +259,9 @@ export default function ReflexGame({ stake }) {
           className="btn btn-primary btn-lg"
           style={{ width: '100%' }}
           onClick={startGrind}
+          disabled={settling}
         >
-          Start Precision Grind ({stake} SC)
+          {settling ? 'Settling with server…' : `Start Precision Grind (${stake} SC)`}
         </button>
       )}
     </div>

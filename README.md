@@ -77,11 +77,11 @@ Whenever a game round resolves, custom full-screen celebration modals pop up wit
   - High-priority Android notification channel (`skate_casino_channel`) with vibration and custom app icon.
   - Attractive lock-screen alerts bringing users back to claim daily vaults, hot blackjack streaks, or multiplier alerts.
   - Background listener scheduling alerts when the user minimizes the app.
-- **💰 Uncapped Staking & Slider Controls**:
+- **💰 Stake Controls (10–5,000 SC)**:
   - Direct custom numeric typing in betting amount box.
-  - Dynamic stake slider scaling automatically to user balance.
-- **🔑 Admin Virtual Credits Injection**:
-  - Built-in credit grant tool in Settings protected by authorization key: `fcukyou`.
+  - Dynamic stake slider scaling automatically to user balance, capped at the table limit.
+- **🔑 Admin Virtual Credits Injection (env-gated)**:
+  - Credit grant tool in Settings, enabled only when a `VITE_ADMIN_KEY` is configured at build time. No key is committed to the repo.
   - Transaction ledger history and balance synchronization.
 
 ---
@@ -101,16 +101,14 @@ Whenever a game round resolves, custom full-screen celebration modals pop up wit
 
 ## 🛡️ Provably Fair Engine
 
-Every game outcome is strictly deterministic and verifiable using industry-standard **HMAC-SHA256**:
+Game outcomes are derived deterministically from `ServerSeed:ClientSeed:Nonce`, so any round can be re-checked with the built-in verifier in **Settings**.
 
-```
-Outcome = HMAC_SHA256(ServerSeed, ClientSeed + ":" + Nonce)
-```
+Be honest about the limits before calling this audited fairness:
 
-1. **Server Seed**: Cryptographically secure 256-bit hexadecimal string committed before the round.
-2. **Client Seed**: User-customizable string editable anytime in **Settings**.
-3. **Nonce**: Incrementing counter for every wager placed.
-4. **Independent Verification**: Use the built-in SHA256 verification tool in **Settings** to audit any historical roll or card draw.
+1. **Server Seed**: generated in-browser per session; the user can rotate it in Settings (nonce resets to 1).
+2. **Client Seed**: user-customizable string, editable anytime in **Settings**.
+3. **Nonce**: incrementing counter for every wager placed.
+4. **The in-browser hash is not vetted SHA-256.** The fairness display uses a small deterministic hash function (`simpleSha256Hex` in `skate-ui/src/store.js`). The Python backend validator (`skate_backend_server.py`) uses real HMAC-SHA256, but the frontend does not call it yet — the app currently runs entirely in the browser on localStorage. Replacing the in-browser hash with WebCrypto SHA-256 and wiring server-authoritative validation are tracked follow-ups, not current claims.
 
 ---
 
@@ -118,9 +116,19 @@ Outcome = HMAC_SHA256(ServerSeed, ClientSeed + ":" + Nonce)
 
 ```
 skate/
-├── SKATE.apk                       # Compiled Android Release/Debug APK (~7.68 MB)
-├── skate_backend_server.py         # Authoritative Python validation & anti-cheat server
-├── skate_production.db             # SQLite3 WAL-mode database
+├── .gitignore                      # APKs, databases, node_modules, env files
+├── skate_backend_server.py         # Python validation library + self-test (game outcome math)
+├── server/                         # FastAPI backend — auth, wallet, games, dummy billing
+│   ├── app.py                      # App wiring, CORS, rate limiting, error envelope
+│   ├── auth.py                     # JWT tokens, PBKDF2 password checks
+│   ├── db.py                       # SQLite schema (extends the validation library's)
+│   ├── blackjack.py                # Server-authoritative 6-deck blackjack state machine
+│   ├── api.py                      # Auth, wallet, fairness, grant endpoints
+│   ├── games.py                    # Game settlement endpoints (all 6 games)
+│   ├── billing.py                  # DUMMY payments + subscriptions (no real money)
+│   ├── requirements.txt
+│   ├── seed_demo.py                # Demo account seeder (demo@skate.app / Demo1234)
+│   └── test_api.py                 # End-to-end API checks (34 checks, no pytest needed)
 ├── ref-imgs/                       # Screenshots and high-res UI artwork
 │   ├── icon.png                    # Official SKATE App Brand Icon
 │   ├── ss1.png                     # Home Lobby Screenshot
@@ -130,19 +138,22 @@ skate/
 │   ├── win_art.png                 # "YOU WIN!" Modal Artwork
 │   └── lose_art.png                # "YOU LOSE" Modal Artwork
 └── skate-ui/                       # React 19 Frontend + Capacitor Project
+    ├── .env.example                # Documented build-time env vars (no real secrets)
     ├── android/                    # Android Studio Native Project
     │   └── app/src/main/
     │       ├── AndroidManifest.xml # Vibrate & Post-Notifications permissions
     │       ├── java/.../MainActivity.java # Java Haptics & Notification Bridges
     │       └── res/                # Mipmap App Icons (mdpi to xxxhdpi) & splash
     ├── src/
-    │   ├── App.jsx                 # App shell, routing transitions, header & nav
-    │   ├── store.js                # State machine, sound engine, haptics & ledger
+    │   ├── App.jsx                 # App shell, routing, auth guard, server banner
+    │   ├── api.js                  # API client (token, error envelope, idempotency)
+    │   ├── auth.jsx                # Auth context (login/register/logout, /me)
+    │   ├── store.js                # UI state; wallet/ledger synced from the server
     │   ├── notificationService.js  # Android local notifications & catchy alerts
     │   ├── index.css               # Luxury Dark Emerald CSS Design System
     │   ├── components/
     │   │   └── WinLoseModal.jsx    # Pop-up celebration & defeat modal
-    │   ├── pages/                  # Home, Play, Rewards, Profile, Settings, History
+    │   ├── pages/                  # Home, Play, Rewards, Profile, Settings, History, Login, Subscribe
     │   └── games/                  # Blackjack, Plinko, Mines, Dice, Crash, Reflex
     ├── public/                     # Icons, vectors, sound assets & artwork
     ├── package.json
@@ -155,24 +166,39 @@ skate/
 
 ### Prerequisites
 - **Node.js** 18+ & **npm**
-- **Python** 3.10+ *(for backend server)*
+- **Python** 3.10+ *(for the API server)*
 - **Android Studio** & **JDK 21** *(for compiling Android APK)*
 
-### 1. Web Application
+### 1. API server (FastAPI + SQLite)
+
+```bash
+python -m venv backend-venv
+./backend-venv/bin/pip install -r server/requirements.txt
+
+SKATE_SERVER_SECRET=your-secret-here \
+SKATE_JWT_SECRET=your-jwt-secret-here \
+SKATE_DB_PATH=server/skate.db \
+./backend-venv/bin/python -m uvicorn server.app:app --port 8000
+```
+
+Interactive docs: [http://localhost:8000/docs](http://localhost:8000/docs). The server is the authority for credits, game outcomes, and the ledger — the frontend never settles a round locally. A demo account can be seeded with `python server/seed_demo.py` (demo@skate.app / Demo1234, play money only). API checks: `python server/test_api.py`.
+
+### 2. Web Application
 
 ```bash
 cd skate-ui
 npm install
 npm run dev
 ```
-Open [http://localhost:5173](http://localhost:5173) in your mobile browser or emulator.
+Open [http://localhost:5173](http://localhost:5173) in your mobile browser or emulator. Set `VITE_API_URL` in `skate-ui/.env` if the API runs elsewhere (default `http://localhost:8000`). Without a reachable API the app shows a banner and does not play for credits.
 
-### 2. Python Backend Server
+### 3. Python validation library (standalone self-test)
 
 ```bash
-python skate_backend_server.py
+SKATE_SERVER_SECRET=your-secret-here python skate_backend_server.py
 ```
-Starts authoritative SQLite3 server on port `8000` with RESTful betting endpoints.
+
+Runs the validation library's self-test: it creates a local dev database and runs every game validator, printing the results. The server secret must come from the environment; there is no committed default.
 
 ### 3. Build & Export Android APK
 
@@ -190,16 +216,15 @@ cd android
 .\gradlew.bat assembleDebug
 
 # Output APK:
-# android/app/build/outputs/apk/debug/app-debug.apk -> SKATE.apk
+# android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ---
 
 ## 📲 Download & Installation
 
-The ready-to-install Android APK is compiled in the repository:
+No APK is committed to this repository. Build one from source with the steps above, or grab a published build from GitHub Releases.
 
-- 📥 **[Download SKATE.apk](file:///c:/Users/Ayush/Documents/Projects0/skate/SKATE.apk)** *(7.68 MB)*
 - Enable *"Install Unknown Apps"* on your Android device and tap to install.
 
 ---
@@ -207,10 +232,20 @@ The ready-to-install Android APK is compiled in the repository:
 ## ⚙️ Configuration & Secrets
 
 | Feature | Key / Command | Description |
-| :--- | :---: | :--- |
-| **Custom Credits Key** | `fcukyou` | Enter in **Settings > Grant Custom Credits** to inject any virtual SC amount. |
+| :--- | :--- | :--- |
+| **API Base URL** | `VITE_API_URL` (frontend env) | Where the web app reaches the API; default `http://localhost:8000`. |
+| **Backend Server Secret** | `SKATE_SERVER_SECRET` (env) | Signs ledger checksums and seeds game validation; no committed default. |
+| **JWT Signing Secret** | `SKATE_JWT_SECRET` (env) | Signs login tokens; no committed default. |
+| **Server Database** | `SKATE_DB_PATH` (env) | SQLite file for the API; default `server/skate.db`. |
 | **Notification Channel** | `skate_casino_channel` | Android notification channel with high priority and vibration. |
-| **Provably Fair Seed** | User configurable | Accessible via **Settings > Preferences & Fairness**. |
+| **Provably Fair Seed** | User configurable | Accessible via **Settings > Preferences & Fairness**; the server commits only a hash of its seed and reveals the old seed on rotation, so past rounds stay verifiable. |
+
+## 🧱 Full-stack notes & known limitations
+
+- **Server authority:** credits, game outcomes, and the ledger live on the API. The frontend animates, but every round settles through an idempotent API call — retrying a request can never pay twice.
+- **Dummy billing:** payments and subscriptions are fake by design. Checkout takes only a pack/plan id, instantly records a `FAKE-` receipt, and never collects or stores card data. Real billing would need a real provider integration with webhook verification, not card fields bolted onto this module.
+- **Scaling path:** the API tier is stateless (JWT auth, DB-held game state) and can scale horizontally, but SQLite is single-writer — moving to Postgres is the documented next step. The in-memory rate limiter is per-process and would move to Redis under multiple workers.
+- **Known gaps (honest, not hidden):** Mines minefield placement is still client-side — the server settles on the revealed-gem count at cashout and debits the stake on a bomb hit, but a malicious client could misreport its count; a server-generated minefield with per-reveal validation is the follow-up. Mission/achievement progress is tracked client-side; their credit grants are capped, idempotent, and ledger-auditable, but not yet server-validated. The in-browser fairness display now uses real WebCrypto HMAC-SHA256, matching the server's scheme.
 
 ---
 

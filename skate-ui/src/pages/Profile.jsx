@@ -15,10 +15,12 @@ import {
   Pencil
 } from 'lucide-react';
 import { useStore } from '../hooks';
+import { useAuth } from '../auth';
 import { LEVEL_TITLES, AVATARS, getState, saveState, showToast, playSound } from '../store';
 
 export default function ProfilePage() {
   const state = useStore();
+  const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [editingAvatar, setEditingAvatar] = useState(false);
 
@@ -55,7 +57,7 @@ export default function ProfilePage() {
 
           <div className="profile-user-details">
             <div className="profile-name-badge-row">
-              <span className="profile-username">{state.auth.username}</span>
+              <span className="profile-username">{user?.username || state.auth.username}</span>
               <span className="vip-crown-badge">
                 <Crown size={12} color="#facc15" />
                 <span>Verified VIP</span>
@@ -67,7 +69,7 @@ export default function ProfilePage() {
             </div>
 
             <div className="profile-bankroll-subtitle">
-              <span>Virtual Bankroll: </span>
+              <span>Virtual Bankroll (server): </span>
               <b className="val-green">{state.credits.toLocaleString()} SC</b>
             </div>
           </div>
@@ -103,6 +105,23 @@ export default function ProfilePage() {
         </div>
       </div>
 
+      {/* Subscription status (from /me via AuthProvider) */}
+      <div className="card" style={{ padding: 14, marginTop: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 800 }}>
+            Subscription: {user?.subscription ? `${user.subscription.plan_id} (${user.subscription.status})` : 'Free — no active plan'}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+            {user?.subscription?.current_period_end
+              ? `Current period ends ${new Date(user.subscription.current_period_end).toLocaleDateString()}`
+              : 'Upgrade for monthly SC bonuses (dummy billing — no real money).'}
+          </div>
+        </div>
+        <button className="btn btn-gold btn-sm" onClick={() => navigate('/subscribe')}>
+          {user?.subscription ? 'Manage' : 'Subscribe'}
+        </button>
+      </div>
+
       {/* Two Info Cards Row */}
       <div className="info-cards-duo-row">
         <div className="info-duo-card" onClick={() => navigate('/settings')}>
@@ -112,7 +131,7 @@ export default function ProfilePage() {
           <div className="info-duo-texts">
             <div className="info-duo-title">VIP Account Verified</div>
             <div className="info-duo-sub">
-              Linked Email: {state.auth.email || 'asd@sdf.gh'}
+              Linked Email: {user?.email || state.auth.email || 'asd@sdf.gh'}
             </div>
           </div>
           <ChevronRight size={16} color="#64748b" />
@@ -292,6 +311,14 @@ export default function ProfilePage() {
           <ChevronRight size={16} color="#64748b" />
         </div>
       </div>
+
+      <button
+        className="btn btn-surface btn-lg"
+        style={{ width: '100%', marginTop: 22 }}
+        onClick={logout}
+      >
+        Log Out
+      </button>
     </div>
   );
 }

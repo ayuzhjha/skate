@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useStore } from '../hooks';
+import { api, newIdempotency } from '../api';
 import {
-  recordTransaction,
-  recordGameOutcome,
-  nextProvablyFairFloat,
+  applyServerBalance,
+  recordLocalGameResult,
+  handleGameError,
   playSound,
   triggerHaptic,
   triggerWinVibration,
@@ -22,7 +23,7 @@ export default function DiceGame({ stake }) {
   const multiplier = +(99.0 / Math.max(1, winChance)).toFixed(2);
   const potentialPayout = Math.round(stake * multiplier);
 
-  const rollDice = () => {
+  const rollDice = async () => {
     if (rolling) return;
     if (state.credits < stake) {
       showToast('Insufficient virtual credits!', 'danger');
@@ -31,13 +32,20 @@ export default function DiceGame({ stake }) {
 
     setRolling(true);
     setLastWon(null);
-
-    // Record bet
-    recordTransaction('bet', `Neon Dice (${mode.toUpperCase()} ${target})`, -stake, `Stake: ${stake} SC`);
     playSound('chip');
 
-    // Provably fair roll float (0.00 to 100.00)
-    const finalRoll = +(nextProvablyFairFloat() * 100).toFixed(2);
+    // Server settles the round: the roll, win and payout below all come
+    // from this response. Nothing is settled locally.
+    let res;
+    try {
+      res = await api.dice(stake, mode, target, newIdempotency());
+    } catch (err) {
+      setRolling(false);
+      await handleGameError(err);
+      return;
+    }
+
+    const finalRoll = res.roll;
 
     let count = 0;
     const interval = setInterval(() => {
@@ -49,16 +57,17 @@ export default function DiceGame({ stake }) {
         setRollResult(finalRoll);
         setRolling(false);
 
-        const won = mode === 'over' ? finalRoll > target : finalRoll < target;
+        const won = res.won;
         setLastWon(won);
 
-        const payout = won ? Math.round(stake * multiplier) : 0;
-        recordGameOutcome('Neon Dice', stake, payout, `Rolled ${finalRoll.toFixed(2)} (${mode.toUpperCase()} ${target})`);
+        const payout = res.payout;
+        applyServerBalance(res.balance, res.xp);
+        recordLocalGameResult('Neon Dice', stake, payout, false);
 
         if (won) {
           playSound('win');
-          triggerWinVibration(multiplier);
-          showToast(`🎲 Rolled ${finalRoll.toFixed(2)}! Won ${payout.toLocaleString()} SC (${multiplier}×)`, 'gold');
+          triggerWinVibration(res.multiplier);
+          showToast(`🎲 Rolled ${finalRoll.toFixed(2)}! Won ${payout.toLocaleString()} SC (${res.multiplier}×)`, 'gold');
         } else {
           playSound('loss');
           triggerHaptic(25);
